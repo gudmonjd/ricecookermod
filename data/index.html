@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Rice Cooker Mod</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" type="text/css" href="style.css">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css"
+    integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
+  <link rel="manifest" href="manifest.json">
+</head>
+
+<body>
+  <div class="topnav">
+    <h1>Rice Cooker Mod</h1>
+  </div>
+
+  <div class="content">
+    <div class="card-grid">
+
+      <!-- Temperature Control -->
+      <div class="card">
+        <p class="card-title"><i class="fas fa-thermometer-half"></i> Temperature Control</p>
+
+        <p>Set temperature: <span id="setTempValue">--</span></p>
+        <input type="range" min="20" max="100" value="0" id="setTempSlider">
+
+        <p>Current temperature: <span id="currentTemp">--</span></p>
+      </div>
+
+      <!-- Turn-off Scheduler -->
+      <div class="card">
+        <p class="card-title"><i class="fas fa-hourglass"></i> Turn Off</p>
+
+        <p>Auto turn-off after:</p>
+
+        <div style="margin-bottom: 10px;">
+          <select id="hours">
+            <option value="0">0 h</option>
+            <option value="1">1 h</option>
+            <option value="2">2 h</option>
+            <option value="3">3 h</option>
+            <option value="4">4 h</option>
+            <option value="5">5 h</option>
+            <option value="6">6 h</option>
+            <option value="7">7 h</option>
+            <option value="8">8 h</option>
+            <option value="9">9 h</option>
+            <option value="10">10 h</option>
+            <option value="11">11 h</option>
+            <option value="12">12 h</option>
+
+          </select>
+
+          <select id="minutes">
+            <option value="0">0 m</option>
+            <option value="15">15 m</option>
+            <option value="30">30 m</option>
+            <option value="45">45 m</option>
+          </select>
+
+        </div>
+
+        <button id="setOffBtn">Set Turn-Off</button>
+
+        <p>Turn-off scheduled at: <span id="offTimeDisplay">--</span></p>
+      </div>
+
+
+      <!-- PWM value -->
+      <div class="card">
+        <p class="card-title"><i class="fas fa-fire"></i> PWM level</p>
+        <p>Heating power: <span id="PWM">0</span></p>
+      </div>
+
+      <!-- Elapsed Time -->
+      <div class="card">
+        <p class="card-title"><i class="fas fa-clock"></i> Time</p>
+        <p>Elapsed time: <span id="elapsedTime">00:00:00</span></p>
+      </div>
+
+
+
+
+
+
+    </div>
+
+    <div>
+      <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+      <canvas id="tempChart"></canvas>
+      <script>
+        const ctx = document.getElementById('tempChart').getContext('2d');
+
+        const tempChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [{
+              label: 'Temperature',
+              data: [],
+              borderColor: 'red',
+              borderWidth: 2,
+              tension: 0.2
+            }]
+          },
+          options: {
+            animation: false,
+            scales: {
+              x: { display: false }
+            }
+          }
+        });
+      </script>
+    </div>
+  </div>
+
+</body>
+
+</html>
+
+<script>
+  // WebSocket
+  var gateway = `ws://${window.location.hostname}/ws`;
+  var websocket = new WebSocket(gateway);
+
+  websocket.onmessage = function (event) {
+
+    // Current temperature
+    if (event.data.startsWith("TEMP:")) {
+      let value = event.data.substring(5);
+      document.getElementById("currentTemp").innerHTML = value + " °C";
+
+      let temp = parseFloat(value);   // FIX: create temp
+
+      tempChart.data.labels.push("");      // empty label
+      tempChart.data.datasets[0].data.push(temp);
+
+      if (tempChart.data.labels.length > 200) {
+        tempChart.data.labels.shift();
+        tempChart.data.datasets[0].data.shift();
+      }
+
+      tempChart.update();
+    }
+
+    // Set temperature (auto-refresh slider label)
+    if (event.data.startsWith("SET:")) {
+      let value = event.data.substring(4);
+
+      document.getElementById("setTempValue").innerHTML = value + " °C";
+
+      // Keep slider synced with ESP32
+      document.getElementById("setTempSlider").value = value;
+    }
+
+    // Current power level
+    if (event.data.startsWith("PWM:")) {
+      let value = event.data.split(":")[1];
+      document.getElementById("PWM").innerHTML = value + " %";
+    }
+
+    // Elapsed time
+    if (event.data.startsWith("TIME:")) {
+      let t = event.data.substring(5);
+      document.getElementById("elapsedTime").innerHTML = t;
+    }
+
+    if (event.data.startsWith("OFF:")) {
+      let value = parseInt(event.data.substring(4));
+
+      if (value > 0) {
+        let elapsed = value / 1000;
+        let oh = Math.floor(elapsed / 3600);
+        let om = Math.floor((elapsed % 3600) / 60);
+        let os = Math.floor(elapsed % 60);
+
+        document.getElementById("offTimeDisplay").innerHTML =
+          `${String(oh).padStart(2, '0')}:${String(om).padStart(2, '0')}:${String(os).padStart(2, '0')}`;
+      } else {
+        document.getElementById("offTimeDisplay").innerHTML = "--";
+      }
+    }
+
+  };
+
+
+
+  // Fetch initial slider value from ESP32
+  const slider = document.getElementById("setTempSlider");
+  const setTempValue = document.getElementById("setTempValue");
+
+  fetch("/getTemp")
+    .then(r => r.text())
+    .then(value => {
+      slider.value = value;
+      setTempValue.innerHTML = value + " °C";
+    });
+
+
+  // Slider logic
+  slider.oninput = function () {
+    setTempValue.innerHTML = this.value + " °C";
+    fetch(`/setTemp?value=${this.value}`);
+  };
+
+
+  // Turn-off scheduler
+  document.getElementById("setOffBtn").onclick = function () {
+    let h = parseInt(document.getElementById("hours").value);
+    let m = parseInt(document.getElementById("minutes").value);
+
+    let seconds = h * 3600 + m * 60;
+
+    fetch(`/setOffTime?seconds=${seconds}`);
+  };
+
+
+</script>
