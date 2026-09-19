@@ -3,6 +3,7 @@
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
 #include "LittleFS.h"
+#include <ArduinoJson.h>
 
 float thermistor(uint8_t analogPin, uint16_t adcSize, uint32_t nominalResistance,
                  uint32_t seriesResistance, uint16_t betaCoefficient, uint8_t nominalTemperature, int samples)
@@ -15,6 +16,8 @@ float thermistor(uint8_t analogPin, uint16_t adcSize, uint32_t nominalResistance
   }
   v = read;
   v /= samples;
+
+  // Now we can apply a polynomial correction that will take care of some of the nonlinearity of the adc. Improves accuracy, not a must.
   v = (-0.0000000187911893375 * pow(v, 3) + 0.0000595767946842051 * pow(v, 2) + 1.01166726880618 * v + 138.2747);
 
   v = seriesResistance * ((pow(2.0, adcSize) - 1) / v - 1);
@@ -66,7 +69,7 @@ Noise noisespread(int analogPin, int samples)
   return n;
 }
 
-int relaystate;
+int relayState;
 int pot;
 
 float filtered = 0;
@@ -77,10 +80,11 @@ float alpha = 0.01; // used by Expontential Moving Average (EMA)
 float targetTemp = -20.0; // slider value
 float currentTemp = 0.0;  // sensor reading
 
-unsigned long startMillis;
 unsigned long turnOffAt = 0; // millis timestamp when action should occur
+unsigned long totalOnTime = 0;
 
 int pwm = 0;
+int pwmLimit = 100;
 unsigned long pwmPeriod = 60000;
 
 void testing()
@@ -90,19 +94,21 @@ void testing()
   Serial.print("C, potmeter read:");
   pot = potmeter(35, 50);
   Serial.print(pot);
-  // Serial.print(" out of 4095. Relay state:");
-  //  if (relaystate)
-  //{
-  //    Serial.print("OFF");
-  //    relaystate = 0;
-  //    digitalWrite(13, LOW);
-  //  }
-  //  else
-  //{
-  //    Serial.print("ON");
-  //    relaystate = 1;
-  //    digitalWrite(13, HIGH);
-  //  }
+
+  Serial.print(" out of 4095. Relay state:");
+  if (relayState)
+  {
+    Serial.print("OFF");
+    relayState = 0;
+    digitalWrite(13, LOW);
+  }
+  else
+  {
+    Serial.print("ON");
+    relayState = 1;
+    digitalWrite(13, HIGH);
+  }
+
   Serial.print(", \% of potmeter: ");
   Serial.print(map(pot, 0, 4095, 0, 100));
   Noise noise1;
@@ -169,6 +175,7 @@ void pwmToRelay(unsigned long periodMs, int pwmPercent, int heaterPin)
 {
   static unsigned long periodStart = 0;
   static unsigned long onTime = 0;
+  static unsigned long onTimeSum = 0;
 
   unsigned long now = millis();
 
@@ -176,29 +183,33 @@ void pwmToRelay(unsigned long periodMs, int pwmPercent, int heaterPin)
   if (now - periodStart >= periodMs)
   {
     periodStart = now;
+    onTimeSum += onTime; // adding the onTime from the previous period to the sum
 
     // Calculate ON and OFF durations at the start of the new period
     onTime = (periodMs * pwmPercent) / 100;
   }
 
-  // Detect overshoot anytime and sets the relay off for the rest of the cycle
-  if (pwmPercent == 0)
-    onTime = 0;
-
   unsigned long elapsed = now - periodStart;
 
+  // Detect overshoot anytime and sets the relay off for the rest of the cycle
+  if (onTime != 0 && pwmPercent == 0)
+  {
+    onTime = elapsed;
+  }
+
   // ON or OFF?
-  if (elapsed < onTime)
+  if (elapsed <= onTime)
   {
     digitalWrite(heaterPin, HIGH); // ON
     // digitalWrite(2, HIGH);
-    relaystate = 1;
+    relayState = 1;
+    totalOnTime = onTimeSum + elapsed;
   }
   else
   {
     digitalWrite(heaterPin, LOW); // OFF
     // digitalWrite(2, LOW);
-    relaystate = 0;
+    relayState = 0;
   }
 }
 
@@ -282,6 +293,59 @@ bool initWiFi()
   return true;
 }
 
+void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
+{
+  AwsFrameInfo *info = (AwsFrameInfo *)arg;
+
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT)
+  {
+
+    // Convert incoming bytes to a String
+    String msg;
+    msg.reserve(len);
+    for (size_t i = 0; i < len; i++)
+    {
+      msg += (char)data[i];
+    }
+
+    // Parse JSON
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, msg);
+
+    if (!error)
+    {
+
+      bool slidersChanged = false;
+
+      if (doc.containsKey("targettemp"))
+      {
+        targetTemp = doc["targettemp"].as<float>();
+        slidersChanged = true;
+      }
+
+      if (doc.containsKey("pwmlimit"))
+      {
+        pwmLimit = doc["pwmlimit"].as<int>();
+        slidersChanged = true;
+      }
+
+      if (doc.containsKey("turnoffat"))
+      {
+        int seconds = doc["turnoffat"].as<int>();
+        turnOffAt = millis() + (seconds * 1000);
+      }
+
+      if (slidersChanged)
+      {
+        updateSliders();
+      }
+
+      // Add more fields easily:
+      // if (doc.containsKey("mode")) { mode = doc["mode"].as<int>(); }
+    }
+  }
+}
+
 // WebSocket Event Handler
 
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
@@ -297,6 +361,41 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
   {
     Serial.println("WS client disconnected");
   }
+
+  if (type == WS_EVT_DATA)
+  {
+    handleWebSocketMessage(arg, data, len);
+  }
+}
+
+void sendStatusJson()
+{
+  StaticJsonDocument<256> doc;
+
+  doc["currenttemp"] = currentTemp;
+  doc["targettemp"] = targetTemp;
+  doc["pwm"] = pwm;
+  doc["pwmlimit"] = pwmLimit;
+  doc["relaystate"] = relayState;
+  doc["currenttime"] = millis();
+  doc["turnoffat"] = turnOffAt;
+  doc["totalontime"] = totalOnTime;
+
+  String json;
+  serializeJson(doc, json);
+  ws.textAll(json);
+}
+
+void updateSliders()
+{
+  StaticJsonDocument<128> doc;
+
+  doc["targettemp"] = targetTemp;
+  doc["pwmlimit"] = pwmLimit;
+
+  String json;
+  serializeJson(doc, json);
+  ws.textAll(json);
 }
 
 void setup()
@@ -305,6 +404,7 @@ void setup()
   pinMode(35, INPUT);  // potmeter
   pinMode(13, OUTPUT); // relay control pin
   digitalWrite(13, LOW);
+  relayState = 0;
   Serial.begin(115200);
 
   initLittleFS();
@@ -325,9 +425,6 @@ void setup()
 
   if (initWiFi())
   {
-
-    startMillis = millis();
-
     // ---------------------------
     // WebSocket
     // ---------------------------
@@ -440,7 +537,7 @@ void loop()
 {
   filteredTemp = (alpha * thermistor(34, 12, 100000, 19880, 3950, 25, 100)) + ((1.0 - alpha) * filteredTemp);
 
-  if (filteredTemp <= 5 || targetTemp <= -20)
+  if (filteredTemp <= 5 || targetTemp <= -10)
   {
     pot = potmeter(35, 50);
     pwm = map(pot, 0, 4095, 0, 100);
@@ -448,41 +545,21 @@ void loop()
   else
   {
     error = targetTemp - filteredTemp;
-    pwm = constrain(error * 5, 0, 100);
+    if (error >= 0)
+      pwm = constrain(error * 5 + abs(filteredTemp - 25) / 30, 0, pwmLimit);
+    else
+      pwm = 0;
   }
 
-  static unsigned long lastTempSend = 0;
-  static unsigned long lastTimeSend = 0;
+  static unsigned long lastStatSend = 0;
 
-  // Push temperature every 5 seconds
-  if (millis() - lastTempSend > 2000)
+  // Push temperature every 1 second(s)
+  if (millis() - lastStatSend > 1000)
   {
-    lastTempSend = millis();
+    lastStatSend = millis();
     currentTemp = filteredTemp;
-    // Send current temperature
-    ws.textAll("TEMP:" + String(currentTemp));
-
-    // ALSO send the set temperature so the browser stays in sync
-    ws.textAll("SET:" + String(targetTemp));
-
-    ws.textAll("PWM:" + String(pwm));
-  }
-
-  // Push elapsed time every 1 second
-  if (millis() - lastTimeSend > 1000)
-  {
-    lastTimeSend = millis();
-
-    unsigned long elapsed = (millis() - startMillis) / 1000;
-    unsigned long hours = elapsed / 3600;
-    unsigned long minutes = (elapsed % 3600) / 60;
-    unsigned long seconds = elapsed % 60;
-
-    char buffer[20];
-    sprintf(buffer, "%02lu:%02lu:%02lu", hours, minutes, seconds);
-
-    ws.textAll(String("TIME:") + buffer);
-    ws.textAll("OFF:" + String(turnOffAt));
+    // Send current stats
+    sendStatusJson();
   }
 
   ws.cleanupClients();
