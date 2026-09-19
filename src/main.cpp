@@ -73,7 +73,7 @@ int relayState;
 int pot;
 
 float filtered = 0;
-float filteredTemp = 0;
+float filteredTemp = 25;
 float error;
 float alpha = 0.01; // used by Expontential Moving Average (EMA)
 
@@ -176,6 +176,7 @@ void pwmToRelay(unsigned long periodMs, int pwmPercent, int heaterPin)
   static unsigned long periodStart = 0;
   static unsigned long onTime = 0;
   static unsigned long onTimeSum = 0;
+  static int overshoot = 0;
 
   unsigned long now = millis();
 
@@ -187,14 +188,17 @@ void pwmToRelay(unsigned long periodMs, int pwmPercent, int heaterPin)
 
     // Calculate ON and OFF durations at the start of the new period
     onTime = (periodMs * pwmPercent) / 100;
+
+    overshoot = 0;
   }
 
   unsigned long elapsed = now - periodStart;
 
   // Detect overshoot anytime and sets the relay off for the rest of the cycle
-  if (onTime != 0 && pwmPercent == 0)
+  if (onTime != 0 && pwmPercent == 0 && !overshoot)
   {
     onTime = elapsed;
+    overshoot = 1;
   }
 
   // ON or OFF?
@@ -293,6 +297,18 @@ bool initWiFi()
   return true;
 }
 
+void updateSliders()
+{
+  JsonDocument doc;
+
+  doc["targettemp"] = targetTemp;
+  doc["pwmlimit"] = pwmLimit;
+
+  String json;
+  serializeJson(doc, json);
+  ws.textAll(json);
+}
+
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
 {
   AwsFrameInfo *info = (AwsFrameInfo *)arg;
@@ -309,7 +325,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
     }
 
     // Parse JSON
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     DeserializationError error = deserializeJson(doc, msg);
 
     if (!error)
@@ -317,27 +333,27 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
 
       bool slidersChanged = false;
 
-      if (doc.containsKey("targettemp"))
+      if (doc["targettemp"].is<float>())
       {
         targetTemp = doc["targettemp"].as<float>();
         slidersChanged = true;
       }
 
-      if (doc.containsKey("pwmlimit"))
+      if (doc["pwmlimit"].is<int>())
       {
         pwmLimit = doc["pwmlimit"].as<int>();
         slidersChanged = true;
       }
 
-      if (doc.containsKey("turnoffat"))
+      if (doc["turnoff"].is<int>())
       {
-        int seconds = doc["turnoffat"].as<int>();
+        int seconds = doc["turnoff"].as<int>();
         turnOffAt = millis() + (seconds * 1000);
       }
 
       if (slidersChanged)
       {
-        updateSliders();
+        // updateSliders();
       }
 
       // Add more fields easily:
@@ -370,7 +386,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
 
 void sendStatusJson()
 {
-  StaticJsonDocument<256> doc;
+  JsonDocument doc;
 
   doc["currenttemp"] = currentTemp;
   doc["targettemp"] = targetTemp;
@@ -386,18 +402,6 @@ void sendStatusJson()
   ws.textAll(json);
 }
 
-void updateSliders()
-{
-  StaticJsonDocument<128> doc;
-
-  doc["targettemp"] = targetTemp;
-  doc["pwmlimit"] = pwmLimit;
-
-  String json;
-  serializeJson(doc, json);
-  ws.textAll(json);
-}
-
 void setup()
 {
   pinMode(34, INPUT);  // 100k thermistor + 20k resistor
@@ -405,6 +409,7 @@ void setup()
   pinMode(13, OUTPUT); // relay control pin
   digitalWrite(13, LOW);
   relayState = 0;
+  filteredTemp = thermistor(34, 12, 100000, 19880, 3950, 25, 100);
   Serial.begin(115200);
 
   initLittleFS();
@@ -440,6 +445,9 @@ void setup()
         request->send(response); });
 
     server.serveStatic("/", LittleFS, "/");
+
+    server.on("/manifest.json", HTTP_GET, [](AsyncWebServerRequest *request)
+              { request->send(LittleFS, "/manifest.json", "application/json"); });
 
     server.on("/setOffTime", HTTP_GET, [](AsyncWebServerRequest *request)
               {
@@ -541,6 +549,7 @@ void loop()
   {
     pot = potmeter(35, 50);
     pwm = map(pot, 0, 4095, 0, 100);
+    pwm = constrain(pwm, 0, pwmLimit);
   }
   else
   {
