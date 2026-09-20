@@ -1,6 +1,3 @@
-let ws = null;
-let reconnectTimer = null;
-
 let lastStatus = {
     currenttemp: null,
     targettemp: null,
@@ -76,12 +73,21 @@ if (chartJsAvailable) {
 }
 
 
+let ws = null;
+let reconnectTimer = null;
+let reconnectDelay = 1000;   // starts at 1s, grows slowly
+let maxDelay = 8000;         // never wait more than 8s
+
 function initWebSocket() {
-    const url = `ws://${window.location.host}/ws`;
+    const url = `ws://${window.location.host}/ws?${Date.now()}`; 
     ws = new WebSocket(url);
 
     ws.onopen = () => {
-        console.log("WebSocket connected");
+        console.log("WS connected");
+
+        // Reset reconnect delay after successful connection
+        reconnectDelay = 1000;
+
         if (reconnectTimer) {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
@@ -89,13 +95,21 @@ function initWebSocket() {
     };
 
     ws.onclose = () => {
-        console.log("WebSocket closed, will reconnect...");
-        reconnectTimer = setTimeout(initWebSocket, 3000);
+        console.log("WS closed, retrying in", reconnectDelay, "ms");
+
+        if (!reconnectTimer) {
+            reconnectTimer = setTimeout(() => {
+                initWebSocket();
+            }, reconnectDelay);
+
+            // Exponential backoff (but capped)
+            reconnectDelay = Math.min(reconnectDelay * 1.5, maxDelay);
+        }
     };
 
     ws.onerror = (e) => {
-        console.log("WebSocket error:", e);
-        ws.close();
+        console.log("WS error:", e);
+        // DO NOT close here — browser will trigger onclose naturally
     };
 
     ws.onmessage = (event) => {
