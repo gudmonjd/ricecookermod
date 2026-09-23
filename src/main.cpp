@@ -77,6 +77,8 @@ float filteredTemp = 25;
 float error;
 float alpha = 0.01; // used by Expontential Moving Average (EMA)
 
+String lastStatusJson;
+
 float targetTemp = -20.0; // slider value
 float currentTemp = 0.0;  // sensor reading
 
@@ -202,7 +204,7 @@ void pwmToRelay(unsigned long periodMs, int pwmPercent, int heaterPin)
   }
 
   // ON or OFF?
-  if (elapsed <= onTime)
+  if (elapsed < onTime)
   {
     digitalWrite(heaterPin, HIGH); // ON
     // digitalWrite(2, HIGH);
@@ -399,6 +401,7 @@ void sendStatusJson()
 
   String json;
   serializeJson(doc, json);
+  lastStatusJson = json;
   ws.textAll(json);
 }
 
@@ -448,6 +451,9 @@ void setup()
 
     server.on("/manifest.json", HTTP_GET, [](AsyncWebServerRequest *request)
               { request->send(LittleFS, "/manifest.json", "application/json"); });
+
+    server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request)
+              { request->send(200, "application/json", lastStatusJson); });
 
     server.on("/setOffTime", HTTP_GET, [](AsyncWebServerRequest *request)
               {
