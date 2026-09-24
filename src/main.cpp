@@ -89,6 +89,22 @@ int pwm = 0;
 int pwmLimit = 100;
 unsigned long pwmPeriod = 60000;
 
+struct Sample
+{
+  float temp;
+  int relay;
+};
+Sample history[600];
+int historyCount = 0;
+int histIndex = 0;
+void addSample(float t, int relay)
+{
+  history[histIndex] = {t, relay};
+  histIndex = (histIndex + 1) % 600;
+  if (historyCount < 600)
+    historyCount++;
+}
+
 void testing()
 {
   Serial.print("Temperature: ");
@@ -217,6 +233,36 @@ void pwmToRelay(unsigned long periodMs, int pwmPercent, int heaterPin)
     // digitalWrite(2, LOW);
     relayState = 0;
   }
+}
+
+String historyBufferJson()
+{
+  String json = "[";
+
+  int start;
+
+  if (historyCount < 600)
+    start = 0;
+  else
+    start = histIndex;
+
+  for (int i = 0; i < historyCount; i++)
+  {
+    int idx = (start + i) % 600;
+
+    json += "{\"temp\":";
+    json += String(history[idx].temp, 2);
+    json += ",\"relay\":";
+    json += history[idx].relay;
+    json += "}";
+
+    if (i < historyCount - 1)
+      json += ",";
+  }
+
+  json += "]";
+
+  return json;
 }
 
 // Read File from LittleFS
@@ -402,6 +448,7 @@ void sendStatusJson()
   String json;
   serializeJson(doc, json);
   lastStatusJson = json;
+  addSample(currentTemp, relayState);
   ws.textAll(json);
 }
 
@@ -454,6 +501,9 @@ void setup()
 
     server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request)
               { request->send(200, "application/json", lastStatusJson); });
+
+    server.on("/history", HTTP_GET, [](AsyncWebServerRequest *request)
+              { request->send(200, "application/json", historyBufferJson()); });
 
     server.on("/setOffTime", HTTP_GET, [](AsyncWebServerRequest *request)
               {

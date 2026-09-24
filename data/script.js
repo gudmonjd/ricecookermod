@@ -77,9 +77,10 @@ let ws = null;
 let reconnectTimer = null;
 let reconnectDelay = 1000;   // starts at 1s, grows slowly
 let maxDelay = 8000;         // never wait more than 8s
+let lastMessageTime = Date.now();
 
 function initWebSocket() {
-    const url = `ws://${window.location.host}/ws?${Date.now()}`; 
+    const url = `ws://${window.location.host}/ws?${Date.now()}`;
     ws = new WebSocket(url);
 
     ws.onopen = () => {
@@ -102,6 +103,12 @@ function initWebSocket() {
                 initWebSocket();
             }, reconnectDelay);
 
+            if (reconnectDelay >= maxDelay) {
+                console.log("Giving up and reloading page...");
+                location.reload();
+                return;
+            }
+
             // Exponential backoff (but capped)
             reconnectDelay = Math.min(reconnectDelay * 1.5, maxDelay);
         }
@@ -113,6 +120,7 @@ function initWebSocket() {
     };
 
     ws.onmessage = (event) => {
+        lastMessageTime = Date.now();
         try {
             const data = JSON.parse(event.data);
             handleStatusJson(data);
@@ -250,7 +258,7 @@ function updateChartJs(data) {
     // Relay (convert boolean → 0/1)
     tempChart.data.datasets[1].data.push(relay ? 1 : 0);
 
-    // Keep last 200 points
+    // Keep last 600 points
     if (tempChart.data.labels.length > 600) {
         tempChart.data.labels.shift();
         tempChart.data.datasets[0].data.shift();
@@ -273,15 +281,17 @@ function updateChartJs(data) {
 
 // GRAPH (simple manual drawing), a fallback if there is no internet connection
 function updateOfflineGraph(data) {
-    resizeCanvas();
-    const canvas = document.getElementById("tempGraph");
-    const ctx = canvas.getContext("2d");
+    const t = data.currenttime !== undefined
+        ? data.currenttime
+        : lastStatus.currenttime;
 
-    const maxPoints = 600;
+    const temp = data.currenttemp !== undefined
+        ? data.currenttemp
+        : lastStatus.currenttemp;
 
-    const t = data.currenttime !== undefined ? data.currenttime : lastStatus.currenttime;
-    const temp = data.currenttemp !== undefined ? data.currenttemp : lastStatus.currenttemp;
-    const relay = data.relaystate !== undefined ? data.relaystate : lastStatus.relaystate;
+    const relay = data.relaystate !== undefined
+        ? data.relaystate
+        : lastStatus.relaystate;
 
     if (t == null || temp == null) return;
 
@@ -289,11 +299,21 @@ function updateOfflineGraph(data) {
     graphData.temps.push(temp);
     graphData.relays.push(relay ? 1 : 0);
 
-    if (graphData.times.length > maxPoints) {
+    if (graphData.times.length > 600) {
         graphData.times.shift();
         graphData.temps.shift();
         graphData.relays.shift();
     }
+
+    drawOfflineGraph();
+}
+
+
+function drawOfflineGraph() {
+    resizeCanvas();
+
+    const canvas = document.getElementById("tempGraph");
+    const ctx = canvas.getContext("2d");
 
     // clear
     ctx.fillStyle = "#111827";
@@ -308,30 +328,38 @@ function updateOfflineGraph(data) {
     const w = canvas.width;
     const h = canvas.height;
 
-    // temp line
+    // temperature line
     ctx.strokeStyle = "#60a5fa";
     ctx.lineWidth = 2;
     ctx.beginPath();
+
     graphData.temps.forEach((val, i) => {
         const x = (i / (graphData.temps.length - 1)) * w;
         const y = h - ((val - minT) / rangeT) * (h - 10) - 5;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+
+        if (i === 0)
+            ctx.moveTo(x, y);
+        else
+            ctx.lineTo(x, y);
     });
+
     ctx.stroke();
 
-    // relay state as bars at bottom
+    // relay state
     ctx.strokeStyle = "#ef4444";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
+
     graphData.relays.forEach((val, i) => {
         const x = (i / (graphData.relays.length - 1)) * w;
         const y = h - 2;
+
         if (val === 1) {
             ctx.moveTo(x, y);
             ctx.lineTo(x, y - 10);
         }
     });
+
     ctx.stroke();
 }
 
@@ -371,10 +399,72 @@ function resizeCanvas() {
     canvas.height = rect.height;
 }
 
+setInterval(() => {
+    if (Date.now() - lastMessageTime > 30000) {
+        console.log("No data for 30s, reloading");
+        location.reload();
+    }
+}, 1000);
 
-window.addEventListener("load", () => {
-    initWebSocket();
+async function loadHistory() {
+    try {
+        const response = await fetch("/history");
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const history = await response.json();
+
+        console.log("Loaded history:", history.length, "samples");
+
+        if (!Array.isArray(history) || history.length === 0) {
+            return;
+        }
+
+        // Chart.js
+        if (chartJsAvailable && tempChart) {
+
+            tempChart.data.labels = history.map(() => "");
+
+            tempChart.data.datasets[0].data =
+                history.map(sample => sample.temp);
+
+            tempChart.data.datasets[1].data =
+                history.map(sample => sample.relay ? 1 : 0);
+
+            // Adjust temperature axis
+            const temps = history.map(sample => sample.temp);
+
+            const minVal = Math.min(...temps);
+            const maxVal = Math.max(...temps);
+
+            tempChart.options.scales.y.min = minVal - 2.5;
+            tempChart.options.scales.y.max = maxVal + 2.5;
+
+            tempChart.update();
+        }
+
+        // Offline/manual graph
+        graphData.times = history.map(() => 0);
+        graphData.temps = history.map(sample => sample.temp);
+        graphData.relays = history.map(sample => sample.relay ? 1 : 0);
+
+        if (!chartJsAvailable) {
+            drawOfflineGraph();
+        }
+
+    } catch (e) {
+        console.log("Failed to load history:", e);
+    }
+}
+
+window.addEventListener("load", async () => {
     initUI();
+
+    await loadHistory();
+
+    initWebSocket();
 });
 
 window.addEventListener("resize", () => {
