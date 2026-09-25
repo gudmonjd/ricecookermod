@@ -99,17 +99,46 @@ function initWebSocket() {
         console.log("WS closed, retrying in", reconnectDelay, "ms");
 
         if (!reconnectTimer) {
-            reconnectTimer = setTimeout(() => {
-                initWebSocket();
-            }, reconnectDelay);
-
             if (reconnectDelay >= maxDelay) {
-                console.log("Giving up and reloading page...");
-                location.reload();
+                console.log("Max delay reached. Checking if ESP32 /status is reachable...");
+
+                // Create a controller to hard-abort the fetch after 2 seconds
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+                fetch('/status', {
+                    cache: 'no-store',
+                    signal: controller.signal
+                })
+                    .then(response => {
+                        clearTimeout(timeoutId);
+                        if (response.ok) {
+                            console.log("/status responded OK. Reloading page...");
+                            location.reload();
+                        } else {
+                            throw new Error("HTTP Status not OK");
+                        }
+                    })
+                    .catch(err => {
+                        clearTimeout(timeoutId);
+                        console.log("ESP32 offline or request timed out. Retrying silently...", err);
+
+                        // Stay on the current PWA page and retry WebSocket connection in maxDelay ms
+                        reconnectTimer = setTimeout(() => {
+                            reconnectTimer = null;
+                            initWebSocket();
+                        }, maxDelay);
+                    });
+
                 return;
             }
 
-            // Exponential backoff (but capped)
+            // Standard exponential backoff reconnect attempt
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                initWebSocket();
+            }, reconnectDelay);
+
             reconnectDelay = Math.min(reconnectDelay * 1.5, maxDelay);
         }
     };

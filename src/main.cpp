@@ -79,15 +79,17 @@ float alpha = 0.01; // used by Expontential Moving Average (EMA)
 
 String lastStatusJson;
 
-float targetTemp = -20.0; // slider value
+float targetTemp = 110.0; // slider value
 float currentTemp = 0.0;  // sensor reading
 
 unsigned long turnOffAt = 0; // millis timestamp when action should occur
 unsigned long totalOnTime = 0;
 
-int pwm = 0;
+int pwm = 100;
 int pwmLimit = 100;
 unsigned long pwmPeriod = 60000;
+
+int webControl = 0;
 
 struct Sample
 {
@@ -195,8 +197,15 @@ void pwmToRelay(unsigned long periodMs, int pwmPercent, int heaterPin)
   static unsigned long onTime = 0;
   static unsigned long onTimeSum = 0;
   static int overshoot = 0;
+  static int firstRun = 1;
 
   unsigned long now = millis();
+
+  if (firstRun) // Make sure it runs at least once at startup, and doesnt lock the relay for the first period.
+  {
+    onTime = (periodMs * pwmPercent) / 100;
+    firstRun = 0;
+  }
 
   // Start a new period if needed
   if (now - periodStart >= periodMs)
@@ -402,6 +411,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
       if (slidersChanged)
       {
         // updateSliders();
+        webControl = 1;
       }
 
       // Add more fields easily:
@@ -459,7 +469,7 @@ void setup()
   pinMode(13, OUTPUT); // relay control pin
   digitalWrite(13, LOW);
   relayState = 0;
-  filteredTemp = thermistor(34, 12, 100000, 19880, 3950, 25, 100);
+  filteredTemp = thermistor(34, 12, 97700, 19880, 4072, 25, 100);
   Serial.begin(115200);
 
   initLittleFS();
@@ -523,6 +533,7 @@ void setup()
         if (request->hasParam("value")) {
             targetTemp = request->getParam("value")->value().toFloat();
             Serial.println("New target temp: " + String(targetTemp));
+            webControl = 1;
         }
         request->send(200, "text/plain", "OK"); });
 
@@ -599,19 +610,19 @@ void setup()
 
 void loop()
 {
-  filteredTemp = (alpha * thermistor(34, 12, 100000, 19880, 3950, 25, 100)) + ((1.0 - alpha) * filteredTemp);
+  filteredTemp = (alpha * thermistor(34, 12, 97700, 19880, 4072, 25, 100)) + ((1.0 - alpha) * filteredTemp);
 
-  if (filteredTemp <= 5 || targetTemp <= -10)
+  if (!webControl)
   {
     pot = potmeter(35, 50);
-    pwm = map(pot, 0, 4095, 0, 100);
-    pwm = constrain(pwm, 0, pwmLimit);
+    pwmLimit = map(pot, 0, 4095, 0, 100);
+    pwm = constrain(100, 0, pwmLimit);
   }
   else
   {
     error = targetTemp - filteredTemp;
     if (error >= 0)
-      pwm = constrain(error * 5 + abs(filteredTemp - 25) / 30, 0, pwmLimit);
+      pwm = constrain(error * 5 + constrain(targetTemp - 25, 0, 100) / 30, 0, pwmLimit);
     else
       pwm = 0;
   }
