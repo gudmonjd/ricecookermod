@@ -469,7 +469,7 @@ void setup()
   pinMode(13, OUTPUT); // relay control pin
   digitalWrite(13, LOW);
   relayState = 0;
-  filteredTemp = thermistor(34, 12, 97700, 19880, 4072, 25, 100);
+  filteredTemp = thermistor(34, 12, 97700, 19880, 3950, 25, 100);
   Serial.begin(115200);
 
   initLittleFS();
@@ -610,7 +610,7 @@ void setup()
 
 void loop()
 {
-  filteredTemp = (alpha * thermistor(34, 12, 97700, 19880, 4072, 25, 100)) + ((1.0 - alpha) * filteredTemp);
+  filteredTemp = (alpha * thermistor(34, 12, 97700, 19880, 3950, 25, 100)) + ((1.0 - alpha) * filteredTemp);
 
   if (!webControl)
   {

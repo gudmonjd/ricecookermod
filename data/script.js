@@ -421,19 +421,12 @@ function initUI() {
 }
 
 function resizeCanvas() {
+    if (chartJsAvailable && tempChart) return; // Prevent corrupting Chart.js state
     const canvas = document.getElementById("tempGraph");
     const rect = canvas.getBoundingClientRect();
-
     canvas.width = rect.width;
     canvas.height = rect.height;
 }
-
-setInterval(() => {
-    if (Date.now() - lastMessageTime > 30000) {
-        console.log("No data for 30s, reloading");
-        location.reload();
-    }
-}, 1000);
 
 async function loadHistory() {
     try {
@@ -488,20 +481,17 @@ async function loadHistory() {
     }
 }
 
-window.addEventListener("load", async () => {
+window.addEventListener("load", () => {
     initUI();
-
-    await loadHistory();
-
+    loadHistory(); // Run non-blocking
     initWebSocket();
 });
 
 window.addEventListener("resize", () => {
-    if (tempChart) tempChart.resize();
-});
-
-window.addEventListener("resize", () => {
-    if (!chartJsAvailable) {
+    if (chartJsAvailable && tempChart) {
+        tempChart.resize();
+    } else {
         resizeCanvas();
+        drawOfflineGraph();
     }
 });
