@@ -89,7 +89,7 @@ int pwm = 100;
 int pwmLimit = 100;
 unsigned long pwmPeriod = 60000;
 
-int webControl = 0;
+int webControl = 0; //if pwmLimit is set by the potentiometer is 0. if it is controlled by the webapp it is 1.
 
 struct Sample
 {
@@ -354,18 +354,6 @@ bool initWiFi()
   return true;
 }
 
-void updateSliders()
-{
-  JsonDocument doc;
-
-  doc["targettemp"] = targetTemp;
-  doc["pwmlimit"] = pwmLimit;
-
-  String json;
-  serializeJson(doc, json);
-  ws.textAll(json);
-}
-
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
 {
   AwsFrameInfo *info = (AwsFrameInfo *)arg;
@@ -410,7 +398,6 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
 
       if (slidersChanged)
       {
-        // updateSliders();
         webControl = 1;
       }
 
@@ -454,6 +441,7 @@ void sendStatusJson()
   doc["currenttime"] = millis();
   doc["turnoffat"] = turnOffAt;
   doc["totalontime"] = totalOnTime;
+  doc["controlmode"] = webControl;
 
   String json;
   serializeJson(doc, json);
@@ -533,6 +521,15 @@ void setup()
         if (request->hasParam("value")) {
             targetTemp = request->getParam("value")->value().toFloat();
             Serial.println("New target temp: " + String(targetTemp));
+            webControl = 1;
+        }
+        request->send(200, "text/plain", "OK"); });
+
+    server.on("/setPwmLimit", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("value")) {
+            pwmLimit = request->getParam("value")->value().toInt();
+            Serial.println("New pwm limit: " + String(pwmLimit));
             webControl = 1;
         }
         request->send(200, "text/plain", "OK"); });

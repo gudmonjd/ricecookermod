@@ -6,7 +6,8 @@ let lastStatus = {
     relaystate: null,
     currenttime: null,
     turnoffat: null,
-    totalontime: null
+    totalontime: null,
+    controlmode: null
 };
 
 let graphData = {
@@ -16,6 +17,11 @@ let graphData = {
 };
 
 let tempChart = null;
+
+// Slider interaction locks to prevent jitter during polling
+let lastTargetInteraction = 0;
+let lastPwmInteraction = 0;
+const SLIDER_COOLDOWN_MS = 2500;
 
 function initChartJs() {
     const canvas = document.getElementById("tempGraph");
@@ -36,13 +42,12 @@ function initChartJs() {
                     label: 'Burner',
                     data: [],
                     borderColor: '#ef4444',
-                    backgroundColor: 'rgba(239,68,68,0.2)',     // red tint
+                    backgroundColor: 'rgba(239,68,68,0.2)',
                     fill: true,
                     stepped: true,
                     tension: 0,
                     yAxisID: 'relayAxis'
                 }
-
             ]
         },
         options: {
@@ -65,128 +70,86 @@ function initChartJs() {
             }
         }
     });
-
 }
 
 if (chartJsAvailable) {
     initChartJs();
 }
 
+// Polling setup
+let pollInterval = null;
+const POLL_RATE_MS = 1000;
 
-let ws = null;
-let reconnectTimer = null;
-let reconnectDelay = 1000;   // starts at 1s, grows slowly
-let maxDelay = 8000;         // never wait more than 8s
-let lastMessageTime = Date.now();
-
-function initWebSocket() {
-    const url = `ws://${window.location.host}/ws?${Date.now()}`;
-    ws = new WebSocket(url);
-
-    ws.onopen = () => {
-        console.log("WS connected");
-
-        // Reset reconnect delay after successful connection
-        reconnectDelay = 1000;
-
-        if (reconnectTimer) {
-            clearTimeout(reconnectTimer);
-            reconnectTimer = null;
-        }
-    };
-
-    ws.onclose = () => {
-        console.log("WS closed, retrying in", reconnectDelay, "ms");
-
-        if (!reconnectTimer) {
-            if (reconnectDelay >= maxDelay) {
-                console.log("Max delay reached. Checking if ESP32 /status is reachable...");
-
-                // Create a controller to hard-abort the fetch after 2 seconds
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 2000);
-
-                fetch('/status', {
-                    cache: 'no-store',
-                    signal: controller.signal
-                })
-                    .then(response => {
-                        clearTimeout(timeoutId);
-                        if (response.ok) {
-                            console.log("/status responded OK. Reloading page...");
-                            location.reload();
-                        } else {
-                            throw new Error("HTTP Status not OK");
-                        }
-                    })
-                    .catch(err => {
-                        clearTimeout(timeoutId);
-                        console.log("ESP32 offline or request timed out. Retrying silently...", err);
-
-                        // Stay on the current PWA page and retry WebSocket connection in maxDelay ms
-                        reconnectTimer = setTimeout(() => {
-                            reconnectTimer = null;
-                            initWebSocket();
-                        }, maxDelay);
-                    });
-
-                return;
-            }
-
-            // Standard exponential backoff reconnect attempt
-            reconnectTimer = setTimeout(() => {
-                reconnectTimer = null;
-                initWebSocket();
-            }, reconnectDelay);
-
-            reconnectDelay = Math.min(reconnectDelay * 1.5, maxDelay);
-        }
-    };
-
-    ws.onerror = (e) => {
-        console.log("WS error:", e);
-        // DO NOT close here — browser will trigger onclose naturally
-    };
-
-    ws.onmessage = (event) => {
-        lastMessageTime = Date.now();
-        try {
-            const data = JSON.parse(event.data);
-            handleStatusJson(data);
-        } catch (e) {
-            console.log("JSON parse error:", e);
-        }
-    };
+function startPolling() {
+    fetchStatus(); // Fetch immediately on load
+    pollInterval = setInterval(fetchStatus, POLL_RATE_MS);
 }
 
-function sendJson(obj) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(obj));
+async function fetchStatus() {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+    try {
+        const response = await fetch('/status', {
+            cache: 'no-store',
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        handleStatusJson(data);
+        updateConnectionStatus(true);
+    } catch (err) {
+        clearTimeout(timeoutId);
+        updateConnectionStatus(false);
+    }
+}
+
+function updateConnectionStatus(isOnline) {
+    let modeEl = document.getElementById("controlMode");
+    if (!modeEl) return;
+
+    if (!isOnline) {
+        modeEl.innerText = "Offline (Reconnecting...)";
+        modeEl.style.color = "#ef4444"; // Red indicator
+    } else {
+        modeEl.style.color = ""; // Reset to default styling
     }
 }
 
 // Handle incoming status JSON
 function handleStatusJson(data) {
-    // store last status
     lastStatus = { ...lastStatus, ...data };
+    const now = Date.now();
 
-    // TEMPERATURE
+    // TEMPERATURE & TARGET SLIDER
     if (data.currenttemp !== undefined) {
         document.getElementById("currentTemp").innerText = data.currenttemp.toFixed(1);
     }
     if (data.targettemp !== undefined) {
-        document.getElementById("targetTempDisplay").innerText = data.targettemp.toFixed(1);
-        document.getElementById("targetTempSlider").value = data.targettemp;
+        const targetSlider = document.getElementById("targetTempSlider");
+        if (document.activeElement !== targetSlider && (now - lastTargetInteraction > SLIDER_COOLDOWN_MS)) {
+            targetSlider.value = data.targettemp;
+            document.getElementById("targetTempDisplay").innerText = data.targettemp.toFixed(1);
+        }
     }
 
-    // BURNER
+    // BURNER & PWM LIMIT SLIDER
     if (data.pwm !== undefined) {
         document.getElementById("pwmValue").innerText = data.pwm;
     }
     if (data.pwmlimit !== undefined) {
-        document.getElementById("pwmLimitDisplay").innerText = data.pwmlimit;
-        document.getElementById("pwmLimitSlider").value = data.pwmlimit;
+        const pwmSlider = document.getElementById("pwmLimitSlider");
+        if (document.activeElement !== pwmSlider && (now - lastPwmInteraction > SLIDER_COOLDOWN_MS)) {
+            pwmSlider.value = data.pwmlimit;
+            document.getElementById("pwmLimitDisplay").innerText = data.pwmlimit;
+        }
     }
+
     if (data.relaystate !== undefined) {
         const badge = document.getElementById("relayStateBadge");
         if (data.relaystate) {
@@ -205,17 +168,24 @@ function handleStatusJson(data) {
         } else {
             flame.classList.remove("flame-on");
         }
-
     }
 
     // STATS
     if (data.currenttime !== undefined) {
-        document.getElementById("elapsedTime").innerText =
-            msToHMS(data.currenttime);
+        document.getElementById("elapsedTime").innerText = msToHMS(data.currenttime);
     }
     if (data.totalontime !== undefined) {
-        document.getElementById("totalOnTime").innerText =
-            Math.floor(data.totalontime / 1000);
+        document.getElementById("totalOnTime").innerText = Math.floor(data.totalontime / 1000);
+    }
+    if (data.controlmode !== undefined) {
+        const modeEl = document.getElementById("controlMode");
+        if (modeEl.style.color !== "rgb(239, 68, 68)") {
+            if (String(data.controlmode) === "0") {
+                modeEl.innerText = "Hardware";
+            } else if (String(data.controlmode) === "1") {
+                modeEl.innerText = "Web app";
+            }
+        }
     }
 
     // TIMER
@@ -248,7 +218,6 @@ function updateTimerDisplay() {
 
     countdownEl.textContent = msToHMS(remainingMs);
 
-    // absolute time: browser time + remainingMs
     const now = new Date();
     const offDate = new Date(now.getTime() + remainingMs);
     const hh = String(offDate.getHours()).padStart(2, "0");
@@ -264,7 +233,7 @@ function msToHMS(ms) {
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-// GRAPH with detection if chart.js could be loaded
+// GRAPH update routing
 function updateGraph(data) {
     if (chartJsAvailable && tempChart) {
         updateChartJs(data);
@@ -280,14 +249,9 @@ function updateChartJs(data) {
     if (temp == null) return;
 
     tempChart.data.labels.push("");
-
-    // Temperature
     tempChart.data.datasets[0].data.push(temp);
-
-    // Relay (convert boolean → 0/1)
     tempChart.data.datasets[1].data.push(relay ? 1 : 0);
 
-    // Keep last 600 points
     if (tempChart.data.labels.length > 600) {
         tempChart.data.labels.shift();
         tempChart.data.datasets[0].data.shift();
@@ -306,21 +270,10 @@ function updateChartJs(data) {
     tempChart.update();
 }
 
-
-
-// GRAPH (simple manual drawing), a fallback if there is no internet connection
 function updateOfflineGraph(data) {
-    const t = data.currenttime !== undefined
-        ? data.currenttime
-        : lastStatus.currenttime;
-
-    const temp = data.currenttemp !== undefined
-        ? data.currenttemp
-        : lastStatus.currenttemp;
-
-    const relay = data.relaystate !== undefined
-        ? data.relaystate
-        : lastStatus.relaystate;
+    const t = data.currenttime !== undefined ? data.currenttime : lastStatus.currenttime;
+    const temp = data.currenttemp !== undefined ? data.currenttemp : lastStatus.currenttemp;
+    const relay = data.relaystate !== undefined ? data.relaystate : lastStatus.relaystate;
 
     if (t == null || temp == null) return;
 
@@ -337,14 +290,12 @@ function updateOfflineGraph(data) {
     drawOfflineGraph();
 }
 
-
 function drawOfflineGraph() {
     resizeCanvas();
 
     const canvas = document.getElementById("tempGraph");
     const ctx = canvas.getContext("2d");
 
-    // clear
     ctx.fillStyle = "#111827";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -357,7 +308,6 @@ function drawOfflineGraph() {
     const w = canvas.width;
     const h = canvas.height;
 
-    // temperature line
     ctx.strokeStyle = "#60a5fa";
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -366,15 +316,12 @@ function drawOfflineGraph() {
         const x = (i / (graphData.temps.length - 1)) * w;
         const y = h - ((val - minT) / rangeT) * (h - 10) - 5;
 
-        if (i === 0)
-            ctx.moveTo(x, y);
-        else
-            ctx.lineTo(x, y);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
     });
 
     ctx.stroke();
 
-    // relay state
     ctx.strokeStyle = "#ef4444";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -392,36 +339,51 @@ function drawOfflineGraph() {
     ctx.stroke();
 }
 
-// UI events
+// UI events using HTTP GET endpoints and smooth input/change handling
 function initUI() {
     const targetSlider = document.getElementById("targetTempSlider");
     const pwmSlider = document.getElementById("pwmLimitSlider");
     const setTimerBtn = document.getElementById("setTimerBtn");
 
+    // Target Temp Slider handlers
     targetSlider.addEventListener("input", (e) => {
+        lastTargetInteraction = Date.now();
         const val = parseFloat(e.target.value);
         document.getElementById("targetTempDisplay").innerText = val.toFixed(1);
-        sendJson({ targettemp: val });
     });
 
+    targetSlider.addEventListener("change", (e) => {
+        lastTargetInteraction = Date.now();
+        const val = parseFloat(e.target.value);
+        fetch(`/setTemp?value=${val}`).catch(err => console.log("Failed to set temp:", err));
+    });
+
+    // PWM Limit Slider handlers
     pwmSlider.addEventListener("input", (e) => {
+        lastPwmInteraction = Date.now();
         const val = parseInt(e.target.value, 10);
         document.getElementById("pwmLimitDisplay").innerText = val;
-        sendJson({ pwmlimit: val });
     });
 
+    pwmSlider.addEventListener("change", (e) => {
+        lastPwmInteraction = Date.now();
+        const val = parseInt(e.target.value, 10);
+        fetch(`/setPwmLimit?value=${val}`).catch(err => console.log("Failed to set PWM limit:", err));
+    });
+
+    // Countdown Timer Button handler
     setTimerBtn.addEventListener("click", () => {
         const hours = parseInt(document.getElementById("hoursSelect").value, 10);
         const minutes = parseInt(document.getElementById("minutesSelect").value, 10);
         const totalSeconds = hours * 3600 + minutes * 60;
         if (totalSeconds > 0) {
-            sendJson({ turnoff: totalSeconds }); // you can adapt to your cpp expectation
+            fetch(`/setOffTime?seconds=${totalSeconds}`).catch(err => console.log("Failed to set timer:", err));
         }
     });
 }
 
 function resizeCanvas() {
-    if (chartJsAvailable && tempChart) return; // Prevent corrupting Chart.js state
+    if (chartJsAvailable && tempChart) return;
     const canvas = document.getElementById("tempGraph");
     const rect = canvas.getBoundingClientRect();
     canvas.width = rect.width;
@@ -438,26 +400,16 @@ async function loadHistory() {
 
         const history = await response.json();
 
-        console.log("Loaded history:", history.length, "samples");
-
         if (!Array.isArray(history) || history.length === 0) {
             return;
         }
 
-        // Chart.js
         if (chartJsAvailable && tempChart) {
-
             tempChart.data.labels = history.map(() => "");
+            tempChart.data.datasets[0].data = history.map(sample => sample.temp);
+            tempChart.data.datasets[1].data = history.map(sample => sample.relay ? 1 : 0);
 
-            tempChart.data.datasets[0].data =
-                history.map(sample => sample.temp);
-
-            tempChart.data.datasets[1].data =
-                history.map(sample => sample.relay ? 1 : 0);
-
-            // Adjust temperature axis
             const temps = history.map(sample => sample.temp);
-
             const minVal = Math.min(...temps);
             const maxVal = Math.max(...temps);
 
@@ -467,7 +419,6 @@ async function loadHistory() {
             tempChart.update();
         }
 
-        // Offline/manual graph
         graphData.times = history.map(() => 0);
         graphData.temps = history.map(sample => sample.temp);
         graphData.relays = history.map(sample => sample.relay ? 1 : 0);
@@ -483,8 +434,8 @@ async function loadHistory() {
 
 window.addEventListener("load", () => {
     initUI();
-    loadHistory(); // Run non-blocking
-    initWebSocket();
+    loadHistory();
+    startPolling();
 });
 
 window.addEventListener("resize", () => {
