@@ -19,6 +19,9 @@ let graphData = {
 let tempChart = null;
 
 // Slider interaction locks to prevent jitter during polling
+// Slider state flags
+let isTargetDragging = false;
+let isPwmDragging = false;
 let lastTargetInteraction = 0;
 let lastPwmInteraction = 0;
 const SLIDER_COOLDOWN_MS = 2500;
@@ -132,7 +135,7 @@ function handleStatusJson(data) {
     }
     if (data.targettemp !== undefined) {
         const targetSlider = document.getElementById("targetTempSlider");
-        if (document.activeElement !== targetSlider && (now - lastTargetInteraction > SLIDER_COOLDOWN_MS)) {
+        if (!isTargetDragging && (now - lastTargetInteraction > SLIDER_COOLDOWN_MS)) {
             targetSlider.value = data.targettemp;
             document.getElementById("targetTempDisplay").innerText = data.targettemp.toFixed(1);
         }
@@ -144,7 +147,7 @@ function handleStatusJson(data) {
     }
     if (data.pwmlimit !== undefined) {
         const pwmSlider = document.getElementById("pwmLimitSlider");
-        if (document.activeElement !== pwmSlider && (now - lastPwmInteraction > SLIDER_COOLDOWN_MS)) {
+        if (!isPwmDragging && (now - lastPwmInteraction > SLIDER_COOLDOWN_MS)) {
             pwmSlider.value = data.pwmlimit;
             document.getElementById("pwmLimitDisplay").innerText = data.pwmlimit;
         }
@@ -347,26 +350,32 @@ function initUI() {
 
     // Target Temp Slider handlers
     targetSlider.addEventListener("input", (e) => {
+        isTargetDragging = true;
         lastTargetInteraction = Date.now();
         const val = parseFloat(e.target.value);
         document.getElementById("targetTempDisplay").innerText = val.toFixed(1);
     });
 
     targetSlider.addEventListener("change", (e) => {
+        isTargetDragging = false;
         lastTargetInteraction = Date.now();
+        e.target.blur(); // Remove focus so Firefox doesn't hold onto activeElement
         const val = parseFloat(e.target.value);
         fetch(`/setTemp?value=${val}`).catch(err => console.log("Failed to set temp:", err));
     });
 
     // PWM Limit Slider handlers
     pwmSlider.addEventListener("input", (e) => {
+        isPwmDragging = true;
         lastPwmInteraction = Date.now();
         const val = parseInt(e.target.value, 10);
         document.getElementById("pwmLimitDisplay").innerText = val;
     });
 
     pwmSlider.addEventListener("change", (e) => {
+        isPwmDragging = false;
         lastPwmInteraction = Date.now();
+        e.target.blur(); // Remove focus so Firefox doesn't hold onto activeElement
         const val = parseInt(e.target.value, 10);
         fetch(`/setPwmLimit?value=${val}`).catch(err => console.log("Failed to set PWM limit:", err));
     });
