@@ -83,6 +83,7 @@ float targetTemp = 110.0; // slider value
 float currentTemp = 0.0;  // sensor reading
 
 unsigned long turnOffAt = 0; // millis timestamp when action should occur
+int turnOff = 0;
 unsigned long totalOnTime = 0;
 
 int pwm = 100;
@@ -508,7 +509,8 @@ void setup()
     if (request->hasParam("seconds")) {
         unsigned long seconds = request->getParam("seconds")->value().toInt();
         turnOffAt = millis() + seconds * 1000UL;
-
+        turnOff = 0;
+        webControl = 1;
         Serial.println("Turn-off scheduled at: " + String(turnOffAt));
         request->send(200, "text/plain", "OK");
     } else {
@@ -522,6 +524,7 @@ void setup()
             targetTemp = request->getParam("value")->value().toFloat();
             Serial.println("New target temp: " + String(targetTemp));
             webControl = 1;
+            turnOff = 0;
         }
         request->send(200, "text/plain", "OK"); });
 
@@ -618,7 +621,7 @@ void loop()
   else
   {
     error = targetTemp - filteredTemp;
-    if (error >= 0)
+    if (error >= 0 && !turnOff)
       pwm = constrain(error * 5 + constrain(targetTemp - 25, 0, 100) / 30, 0, pwmLimit);
     else
       pwm = 0;
@@ -640,10 +643,9 @@ void loop()
   if (turnOffAt > 0 && millis() >= turnOffAt)
   {
     Serial.println("Turn-off time reached!");
-
     targetTemp = 0.0;
-
     turnOffAt = 0; // reset so it doesn't repeat
+    turnOff = 1;
   }
 
   pwmToRelay(pwmPeriod, pwm, 13);
