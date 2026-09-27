@@ -26,6 +26,31 @@ let lastTargetInteraction = 0;
 let lastPwmInteraction = 0;
 const SLIDER_COOLDOWN_MS = 2500;
 
+// Tab title flashing control
+let flashInterval = null;
+
+function startTitleFlashing() {
+    if (flashInterval) return;
+    let flag = false;
+    flashInterval = setInterval(() => {
+        const tempStr = lastStatus.currenttemp !== null ? `${lastStatus.currenttemp.toFixed(1)}°C` : '';
+        document.title = flag ? "⏰ TIMER COMPLETE!" : `${tempStr} — Rice Cooker`;
+        flag = !flag;
+    }, 800);
+}
+
+function stopTitleFlashing() {
+    if (flashInterval) {
+        clearInterval(flashInterval);
+        flashInterval = null;
+    }
+    if (lastStatus.currenttemp !== null) {
+        document.title = `${lastStatus.currenttemp.toFixed(1)}°C — Rice Cooker`;
+    } else {
+        document.title = "Rice Cooker";
+    }
+}
+
 function initChartJs() {
     const canvas = document.getElementById("tempGraph");
 
@@ -118,9 +143,18 @@ function updateConnectionStatus(isOnline) {
 
     if (!isOnline) {
         modeEl.innerText = "Offline (Reconnecting...)";
-        modeEl.style.color = "#ef4444"; // Red indicator
+        modeEl.style.color = "#ef4444";
+
+        // Show offline state in tab title if alarm flash is not active
+        if (!flashInterval) {
+            if (lastStatus.currenttemp !== null) {
+                document.title = `[Offline] ${lastStatus.currenttemp.toFixed(1)}°C — Rice Cooker`;
+            } else {
+                document.title = `[Offline] Rice Cooker`;
+            }
+        }
     } else {
-        modeEl.style.color = ""; // Reset to default styling
+        modeEl.style.color = "";
     }
 }
 
@@ -131,7 +165,13 @@ function handleStatusJson(data) {
 
     // TEMPERATURE & TARGET SLIDER
     if (data.currenttemp !== undefined) {
-        document.getElementById("currentTemp").innerText = data.currenttemp.toFixed(1);
+        const tempStr = data.currenttemp.toFixed(1);
+        document.getElementById("currentTemp").innerText = tempStr;
+
+        // Only set standard tab title if the timer complete flash isn't active
+        if (!flashInterval) {
+            document.title = `${tempStr}°C — Rice Cooker`;
+        }
     }
     if (data.targettemp !== undefined) {
         const targetSlider = document.getElementById("targetTempSlider");
@@ -205,27 +245,38 @@ function updateTimerDisplay() {
 
     const countdownEl = document.getElementById("turnOffCountdown");
     const absoluteEl = document.getElementById("turnOffAbsolute");
+    const timerCard = countdownEl ? countdownEl.closest(".card") : null;
 
-    if (!ct || !to || to <= 0) {
+    // Always calculate and display internal ESP countdown
+    if (ct && to && to > 0) {
+        const remainingMs = to - ct;
+        if (remainingMs > 0) {
+            countdownEl.textContent = msToHMS(remainingMs);
+
+            const now = new Date();
+            const offDate = new Date(now.getTime() + remainingMs);
+            const hh = String(offDate.getHours()).padStart(2, "0");
+            const mm = String(offDate.getMinutes()).padStart(2, "0");
+            absoluteEl.textContent = `${hh}:${mm}`;
+        } else {
+            countdownEl.textContent = "00:00:00";
+            absoluteEl.textContent = "--:--";
+        }
+    } else {
         countdownEl.textContent = "--:--:--";
         absoluteEl.textContent = "--:--";
-        return;
     }
 
-    const remainingMs = to - ct;
-    if (remainingMs <= 0) {
-        countdownEl.textContent = "00:00:00";
-        absoluteEl.textContent = "--:--";
-        return;
+    // Alarm triggering based purely on ESP status
+    if (lastStatus.targettemp === 0) {
+        if (timerCard) timerCard.classList.add("card-alarm");
+        countdownEl.classList.add("timer-expired");
+        startTitleFlashing();
+    } else {
+        if (timerCard) timerCard.classList.remove("card-alarm");
+        countdownEl.classList.remove("timer-expired");
+        stopTitleFlashing();
     }
-
-    countdownEl.textContent = msToHMS(remainingMs);
-
-    const now = new Date();
-    const offDate = new Date(now.getTime() + remainingMs);
-    const hh = String(offDate.getHours()).padStart(2, "0");
-    const mm = String(offDate.getMinutes()).padStart(2, "0");
-    absoluteEl.textContent = `${hh}:${mm}`;
 }
 
 function msToHMS(ms) {

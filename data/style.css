@@ -158,3 +158,33 @@ select {
     height: 600px;
   }
 }
+
+/* Blinking red/amber highlight for expired countdown */
+.timer-expired {
+  color: #ef4444 !important; /* Warning Red */
+  font-weight: bold;
+  animation: pulseTimer 1s infinite alternate;
+}
+
+@keyframes pulseTimer {
+  from { opacity: 1; }
+  to { opacity: 0.3; }
+}
+
+/* Alarm state for Timer Card */
+.card-alarm {
+  border: 1px solid #ef4444 !important;
+  animation: cardPulse 1.2s infinite alternate ease-in-out;
+}
+
+@keyframes cardPulse {
+  from {
+    box-shadow: 0 0 4px rgba(239, 68, 68, 0.3);
+    border-color: #ef4444;
+  }
+  to {
+    box-shadow: 0 0 16px rgba(239, 68, 68, 0.85);
+    border-color: #f87171;
+    background-color: #2b1d24; /* Subtle reddish tint */
+  }
+}
