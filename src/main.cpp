@@ -90,7 +90,7 @@ int pwm = 100;
 int pwmLimit = 100;
 unsigned long pwmPeriod = 60000;
 
-int webControl = 0; //if pwmLimit is set by the potentiometer is 0. if it is controlled by the webapp it is 1.
+int webControl = 0; // if pwmLimit is set by the potentiometer is 0. if it is controlled by the webapp it is 1.
 
 struct Sample
 {
@@ -180,7 +180,7 @@ IPAddress subnet(255, 255, 0, 0);
 
 // Timer variables
 unsigned long previousMillis = 0;
-const long interval = 10000; // interval to wait for Wi-Fi connection (milliseconds)
+const long interval = 60000; // interval to wait for Wi-Fi connection (milliseconds)
 
 // Initialize LittleFS
 void initLittleFS()
@@ -649,6 +649,18 @@ void loop()
   }
 
   pwmToRelay(pwmPeriod, pwm, 13);
+
+  // Check Wi-Fi status periodically in loop
+  static unsigned long lastWiFiCheck = 0;
+  if (millis() - lastWiFiCheck > 10000)
+  { // Check every 10 seconds
+    lastWiFiCheck = millis();
+    if (WiFi.status() != WL_CONNECTED && ssid != "")
+    {
+      Serial.println("WiFi disconnected. Attempting to reconnect...");
+      WiFi.begin(ssid.c_str(), pass.c_str());
+    }
+  }
 }
 
 // 19880 ohm series resistor
